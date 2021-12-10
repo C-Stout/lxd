@@ -30,6 +30,8 @@ type cmdCopy struct {
 	flagTarget        string
 	flagTargetProject string
 	flagRefresh       bool
+
+	flagZFSCloneCopy  bool
 }
 
 func (c *cmdCopy) Command() *cobra.Command {
@@ -53,6 +55,8 @@ func (c *cmdCopy) Command() *cobra.Command {
 	cmd.Flags().StringVar(&c.flagTargetProject, "target-project", "", i18n.G("Copy to a project different from the source")+"``")
 	cmd.Flags().BoolVar(&c.flagNoProfiles, "no-profiles", false, i18n.G("Create the instance with no profiles applied"))
 	cmd.Flags().BoolVar(&c.flagRefresh, "refresh", false, i18n.G("Perform an incremental copy"))
+
+	cmd.Flags().BoolVar(&c.flagZFSCloneCopy, "full", false, i18n.G("Copy the instance storage with full dataset copies (without zfs lightweight clones"))
 
 	return cmd
 }
@@ -95,7 +99,7 @@ func (c *cmdCopy) copyInstance(conf *config.Config, sourceResource string, destR
 	if err != nil {
 		return err
 	}
-
+	
 	// Connect to the destination host
 	var dest lxd.InstanceServer
 	if sourceRemote == destRemote {
@@ -108,18 +112,18 @@ func (c *cmdCopy) copyInstance(conf *config.Config, sourceResource string, destR
 			return err
 		}
 	}
-
+		
 	// Project copies
 	if c.flagTargetProject != "" {
 		dest = dest.UseProject(c.flagTargetProject)
 	}
-
+	
 	// Confirm that --target is only used with a cluster
 	if c.flagTarget != "" && !dest.IsClustered() {
 		return fmt.Errorf(i18n.G("To use --target, the destination remote must be a cluster"))
 	}
-
-	// Parse the config overrides
+		
+		// Parse the config overrides
 	configMap := map[string]string{}
 	for _, entry := range c.flagConfig {
 		if !strings.Contains(entry, "=") {
@@ -150,6 +154,17 @@ func (c *cmdCopy) copyInstance(conf *config.Config, sourceResource string, destR
 	var op lxd.RemoteOperation
 	var writable api.InstancePut
 	var start bool
+	var storagePool *api.StoragePool
+	//var poolTag string
+
+	// Disable zfs.clone_copy
+	if c.flagZFSCloneCopy {
+		storagePool, _, err := source.GetStoragePool(pool)
+		if err != nil {
+			return fmt.Errorf(i18n.G("Can't find storage pool"))
+		}
+		storagePool.Config["zfs.clone_copy"] = "false"
+	}
 
 	if shared.IsSnapshot(sourceName) {
 		if instanceOnly {
@@ -242,6 +257,7 @@ func (c *cmdCopy) copyInstance(conf *config.Config, sourceResource string, destR
 		if err != nil {
 			return err
 		}
+
 	} else {
 		// Prepare the instance creation request
 		args := lxd.InstanceCopyArgs{
@@ -335,6 +351,11 @@ func (c *cmdCopy) copyInstance(conf *config.Config, sourceResource string, destR
 		}
 
 		writable = entry.Writable()
+	}
+
+	// Re-enable zfs.clone_copy
+	if c.flagZFSCloneCopy {
+		storagePool.Config["zfs.clone_copy"] = "true"
 	}
 
 	// Watch the background operation
